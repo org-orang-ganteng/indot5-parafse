@@ -646,17 +646,18 @@ class IndoT5HybridParaphraser:
             else:
                 self._result_cache.clear()
     
-    def generate_variations(self, text: str, num_variations: int = 3, method: str = "hybrid") -> List[IndoT5HybridResult]:
+    def generate_variations(self, text: str, num_variations: int = 5, method: str = "hybrid", min_quality_threshold: float = 70.0) -> List[IndoT5HybridResult]:
         """
         Generate multiple paraphrase variations
         
         Args:
             text: Input text
-            num_variations: Number of variations to generate
+            num_variations: Number of variations to generate (default: 5)
             method: Paraphrasing method ("hybrid", "neural", "rule-based")
+            min_quality_threshold: Minimum quality score (0-100) for filtering results (default: 70.0)
             
         Returns:
-            List of IndoT5HybridResult objects
+            List of IndoT5HybridResult objects sorted by quality score
         """
         variations = []
         seen_texts = set()
@@ -694,6 +695,15 @@ class IndoT5HybridParaphraser:
         
         # Sort by quality score
         variations.sort(key=lambda x: x.quality_score, reverse=True)
+        
+        # Filter by minimum quality threshold if specified
+        if min_quality_threshold > 0:
+            filtered = [v for v in variations if v.quality_score >= min_quality_threshold]
+            # If filtering removes all results, return best available
+            if filtered:
+                return filtered
+            else:
+                logger.warning(f"No variations met quality threshold {min_quality_threshold}%. Returning best available.")
         
         return variations
     

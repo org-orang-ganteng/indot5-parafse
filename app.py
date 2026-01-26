@@ -68,8 +68,8 @@ def paraphrase():
         
         # Extract parameters with defaults
         method = data.get('method', 'hybrid')
-        num_variations = data.get('num_variations', 3)
-        min_quality = data.get('min_quality', 0.6)
+        num_variations = data.get('num_variations', 5)
+        min_quality = data.get('min_quality', 70)  # Percentage scale (0-100)
         max_length = data.get('max_length', 200)
         temperature = data.get('temperature', 1.0)
         
@@ -80,8 +80,8 @@ def paraphrase():
         if num_variations < 1 or num_variations > 10:
             return jsonify({'error': 'Number of variations must be between 1 and 10'}), 400
         
-        if min_quality < 0 or min_quality > 1:
-            return jsonify({'error': 'Min quality must be between 0 and 1'}), 400
+        if min_quality < 0 or min_quality > 100:
+            return jsonify({'error': 'Min quality must be between 0 and 100'}), 400
         
         if max_length < 10 or max_length > 1000:
             return jsonify({'error': 'Max length must be between 10 and 1000'}), 400
@@ -89,10 +89,17 @@ def paraphrase():
         if temperature < 0.1 or temperature > 2.0:
             return jsonify({'error': 'Temperature must be between 0.1 and 2.0'}), 400
         
-        logger.info(f"Processing text: {text[:50]}... with method: {method}")
+        logger.info(f"Processing text: {text[:50]}... with method: {method}, min_quality: {min_quality}%")
         
         # Generate paraphrases using generate_variations for unique results
-        results = paraphraser.generate_variations(text, num_variations=num_variations, method=method)
+        # Request more variations to ensure we have enough after quality filtering
+        request_count = min(num_variations * 2, 10)  # Request up to 2x, max 10
+        results = paraphraser.generate_variations(
+            text, 
+            num_variations=request_count, 
+            method=method,
+            min_quality_threshold=min_quality
+        )
         paraphrases = []
         for result in results:
             paraphrases.append({
@@ -112,12 +119,28 @@ def paraphrase():
         # Sort by quality score (descending)
         paraphrases.sort(key=lambda x: x['quality_score'], reverse=True)
         
+        # Filter by minimum quality threshold
+        filtered_paraphrases = [p for p in paraphrases if p['quality_score'] >= min_quality]
+        
+        # If no results meet threshold, return best available with warning
+        if not filtered_paraphrases and paraphrases:
+            filtered_paraphrases = paraphrases[:num_variations]  # Return top results anyway
+            warning = f"No results met quality threshold ({min_quality}%). Showing best available."
+        else:
+            filtered_paraphrases = filtered_paraphrases[:num_variations]  # Limit to requested count
+            warning = None
+        
         response_data = {
             'original_text': text,
             'method': method,
-            'paraphrases': paraphrases,
-            'total_variations': len(paraphrases)
+            'min_quality_threshold': min_quality,
+            'paraphrases': filtered_paraphrases,
+            'total_variations': len(filtered_paraphrases),
+            'total_generated': len(paraphrases)
         }
+        
+        if warning:
+            response_data['warning'] = warning
         
         logger.info(f"Generated {len(paraphrases)} paraphrases")
         return jsonify(response_data)
