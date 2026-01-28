@@ -8,6 +8,8 @@ import os
 import sys
 import subprocess
 import importlib.util
+import socket
+import signal
 
 def check_dependencies():
     """Check if required dependencies are installed"""
@@ -62,6 +64,49 @@ def check_data_files():
     
     return True
 
+def is_port_available(port):
+    """Check if a port is available"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(('0.0.0.0', port))
+        sock.close()
+        return True
+    except OSError:
+        return False
+
+def find_available_port(start_port=5000, max_attempts=10):
+    """Find an available port starting from start_port"""
+    for port in range(start_port, start_port + max_attempts):
+        if is_port_available(port):
+            return port
+    return None
+
+def kill_process_on_port(port):
+    """Kill process using the specified port"""
+    try:
+        # Use lsof to find the process
+        result = subprocess.run(
+            ['lsof', '-ti', f':{port}'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    print(f"   🔸 Menghentikan proses PID {pid} yang menggunakan port {port}")
+                except ProcessLookupError:
+                    pass
+            import time
+            time.sleep(1)
+            return True
+        return False
+    except Exception as e:
+        print(f"   ⚠️  Gagal menghentikan proses: {e}")
+        return False
+
 def main():
     """Main function to start the web application"""
     print("🚀 IndoT5 Hybrid Paraphraser Web Application")
@@ -85,7 +130,36 @@ def main():
     
     print("✅ All checks passed!")
     print("\n🌐 Starting web server...")
-    print("📍 Server akan berjalan di: http://localhost:5000")
+    
+    # Check and handle port availability
+    default_port = 5000
+    port = default_port
+    
+    if not is_port_available(default_port):
+        print(f"⚠️  Port {default_port} sedang digunakan")
+        print("🔄 Mencoba menghentikan proses yang menggunakan port tersebut...")
+        
+        if kill_process_on_port(default_port):
+            if is_port_available(default_port):
+                print(f"✅ Port {default_port} sekarang tersedia")
+            else:
+                print(f"⚠️  Port {default_port} masih tidak tersedia, mencari port lain...")
+                port = find_available_port(default_port + 1)
+                if port:
+                    print(f"✅ Menggunakan port alternatif: {port}")
+                else:
+                    print("❌ Tidak dapat menemukan port yang tersedia")
+                    sys.exit(1)
+        else:
+            print(f"⚠️  Gagal menghentikan proses, mencari port lain...")
+            port = find_available_port(default_port + 1)
+            if port:
+                print(f"✅ Menggunakan port alternatif: {port}")
+            else:
+                print("❌ Tidak dapat menemukan port yang tersedia")
+                sys.exit(1)
+    
+    print(f"📍 Server akan berjalan di: http://localhost:{port}")
     print("⏹️  Tekan Ctrl+C untuk menghentikan server")
     print("=" * 50)
     
@@ -99,14 +173,14 @@ def main():
         print("✅ Paraphraser initialized successfully!")
         print("🌐 Web server is starting...")
         print("")
-        print("📱 Buka browser dan akses: http://localhost:5000")
+        print(f"📱 Buka browser dan akses: http://localhost:{port}")
         print("🎯 Atau klik link di atas untuk mengakses interface")
         print("")
         
         # Run the Flask app
         app.run(
             host='0.0.0.0',
-            port=5000,
+            port=port,
             debug=False,
             threaded=True
         )
@@ -119,7 +193,8 @@ def main():
         print("\n💡 Troubleshooting:")
         print("   1. Pastikan semua dependency terinstall")
         print("   2. Pastikan file data tersedia")
-        print("   3. Periksa apakah port 5000 sedang digunakan")
+        print("   3. Coba jalankan ulang script ini")
+        print(f"   4. Atau coba port manual: python app.py")
         sys.exit(1)
 
 if __name__ == '__main__':

@@ -35,19 +35,19 @@ class IndoT5HybridConfig:
     model_name: str = "Wikidepia/IndoT5-base"
     use_gpu: bool = True
     max_length: int = 512
-    num_beams: int = 4
-    temperature: float = 0.8
-    top_k: int = 50
-    top_p: float = 0.9
-    repetition_penalty: float = 1.1
+    num_beams: int = 5
+    temperature: float = 1.8
+    top_k: int = 90
+    top_p: float = 0.95
+    repetition_penalty: float = 1.6
     
     # Quality thresholds
-    min_quality_threshold: float = 60.0
-    neural_confidence_threshold: float = 0.7
-    semantic_similarity_threshold: float = 0.8
+    min_quality_threshold: float = 50.0
+    neural_confidence_threshold: float = 0.5
+    semantic_similarity_threshold: float = 0.70
     
     # Synonym replacement settings
-    synonym_replacement_rate: float = 0.3
+    synonym_replacement_rate: float = 0.7
     min_synonym_confidence: float = 0.6
     max_synonyms_per_word: int = 3
     preserve_entities: bool = True

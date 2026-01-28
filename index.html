@@ -178,6 +178,8 @@
             text-align: center;
             padding: 20px;
             color: #667eea;
+            font-size: 1.1em;
+            font-weight: 500;
         }
 
         .loading::after {
@@ -190,6 +192,12 @@
             border-top-color: transparent;
             animation: spin 1s linear infinite;
             margin-left: 10px;
+        }
+        
+        .loading-details {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #999;
         }
 
         @keyframes spin {
@@ -612,9 +620,21 @@
                     body: formData
                 });
                 
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    let errorMsg = 'Gagal mengupload file';
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        errorMsg = errorData.error || errorMsg;
+                    } catch (e) {
+                        errorMsg = errorText || errorMsg;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
                 const data = await response.json();
                 
-                if (response.ok && data.success) {
+                if (data.success) {
                     // Store chunks for later processing
                     uploadedChunks = data.chunks || [];
                     uploadedText = data.text || '';
@@ -668,7 +688,10 @@
             results.style.display = 'none';
             error.style.display = 'none';
             
-            // Show loading
+            // Show loading with estimate
+            const numVars = parseInt(document.getElementById('numVariations').value) || 3;
+            const estimatedTime = numVars * 4; // ~4s per variation (improved quality)
+            loading.innerHTML = `🔄 Memproses parafrase... (estimasi ${estimatedTime}-${estimatedTime+8} detik)<div class="loading-details">Menggunakan AI IndoT5 dengan semantic analysis untuk ${numVars} variasi berkualitas tinggi</div>`;
             loading.style.display = 'block';
             submitBtn.disabled = true;
             
@@ -689,9 +712,21 @@
                         })
                     });
                     
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        let errorMsg = 'Gagal memproses chunks';
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            errorMsg = errorData.error || errorMsg;
+                        } catch (e) {
+                            errorMsg = errorText || errorMsg;
+                        }
+                        throw new Error(errorMsg);
+                    }
+                    
                     const data = await response.json();
                     
-                    if (response.ok && data.success) {
+                    if (data.success) {
                         displayChunkResults(data);
                     } else {
                         throw new Error(data.error || 'Gagal memproses chunks');
@@ -713,6 +748,18 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(formData)
                     });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        let errorMsg = 'Terjadi kesalahan';
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            errorMsg = errorData.error || errorMsg;
+                        } catch (e) {
+                            errorMsg = errorText || errorMsg;
+                        }
+                        throw new Error(errorMsg);
+                    }
                     
                     const data = await response.json();
                     

@@ -57,10 +57,10 @@ class IndoT5HybridParaphraser:
     def __init__(self, 
                  model_name: str = "Wikidepia/IndoT5-base",
                  use_gpu: bool = True,
-                 synonym_rate: float = 0.3,
-                 min_confidence: float = 0.7,
-                 quality_threshold: float = 75.0,
-                 max_transformations: int = 3,
+                 synonym_rate: float = 0.7,
+                 min_confidence: float = 0.5,
+                 quality_threshold: float = 60.0,
+                 max_transformations: int = 5,
                  enable_caching: bool = True):
         """
         Initialize IndoT5 Hybrid Paraphraser
@@ -95,6 +95,7 @@ class IndoT5HybridParaphraser:
         if self.enable_caching:
             self._result_cache = {}
             self._synonym_cache = {}
+            self._similarity_cache = {}  # Cache for semantic similarity
         
         logger.info(f"✅ IndoT5 Hybrid Paraphraser initialized")
         logger.info(f"   Model: {self.model_name}")
@@ -201,14 +202,9 @@ class IndoT5HybridParaphraser:
             'karena', 'sebab', 'sehingga', 'meski', 'walaupun', 'meskipun'
         }
     
-    def _neural_paraphrase(self, text: str, num_beams: int = 5, temperature: float = 1.2) -> Tuple[str, float]:
+    def _neural_paraphrase(self, text: str, num_beams: int = 4, temperature: float = 1.2) -> Tuple[str, float]:
         """
-        Generate paraphrase using IndoT5 neural model
-        
-        IndoT5 works best with:
-        1. Direct input without prefix (or minimal prefix)
-        2. Nucleus sampling with higher temperature for variation
-        3. Multiple candidate generation and selection
+        Generate paraphrase using IndoT5 neural model (IMPROVED QUALITY & DIVERSITY)
         
         Args:
             text: Input text
@@ -219,93 +215,211 @@ class IndoT5HybridParaphraser:
             Tuple of (paraphrased_text, confidence_score)
         """
         try:
-            # IndoT5 works better without complex prefix
-            # Use the text directly for more natural output
-            inputs = self.tokenizer(
-                text,
-                return_tensors="pt",
-                max_length=512,
-                truncation=True,
-                padding=True
-            )
+            # Try multiple strategies to get best result
+            strategies = [
+                ("parafrasekan", 1.3),      # Strategy 1: formal, higher temp
+                ("tulis ulang", 1.1),       # Strategy 2: creative, normal temp
+            ]
             
-            if self.use_gpu:
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            all_candidates = []
             
-            # Generate multiple candidates and pick the best one
-            candidates = []
-            
-            # Strategy 1: Nucleus Sampling (more creative)
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_length=min(len(text.split()) * 3, 256),
-                    num_return_sequences=3,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=0.92,
-                    top_k=50,
-                    repetition_penalty=1.2,
-                    no_repeat_ngram_size=2,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
+            for prefix, temp in strategies:
+                prefix_text = f"{prefix}: {text}"
+                
+                inputs = self.tokenizer(
+                    prefix_text,
+                    return_tensors="pt",
+                    max_length=512,
+                    truncation=True,
+                    padding=True
                 )
             
-            for output in outputs:
-                decoded = self.tokenizer.decode(output, skip_special_tokens=True)
-                # Clean up output
-                decoded = decoded.strip()
-                if decoded and len(decoded) > 5:
-                    candidates.append(decoded)
-            
-            if not candidates:
-                # Fallback: return original text
-                return text, 0.0
-            
-            # Select the best candidate based on:
-            # 1. Length similarity to original
-            # 2. Not identical to original
-            # 3. Contains meaningful content
-            original_words = set(text.lower().split())
-            best_candidate = None
-            best_score = -1
-            
-            for candidate in candidates:
-                # Skip if too similar or too different
-                if candidate.lower() == text.lower():
-                    continue
+                if self.use_gpu:
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 
-                candidate_words = set(candidate.lower().split())
+                # Add randomization for diversity
+                actual_temp = temp + random.uniform(-0.15, 0.25)
+                actual_temp = max(0.9, min(1.8, actual_temp))
                 
-                # Calculate overlap (should be moderate, not too high or low)
-                if len(candidate_words) == 0:
-                    continue
+                # Generate with both beam search and sampling
+                with torch.no_grad():
+                    # Beam search results
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_length=min(len(text.split()) * 2 + 50, 256),
+                        min_length=max(len(text.split()) - 5, 5),
+                        num_beams=num_beams,
+                        num_return_sequences=2,  # Get 2 candidates per strategy
+                        do_sample=True,
+                        temperature=actual_temp,
+                        top_k=60,
+                        top_p=0.93,
+                        early_stopping=True,
+                        repetition_penalty=1.5,
+                        length_penalty=0.8,
+                        no_repeat_ngram_size=3,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id
+                    )
+                
+                # Process all candidates
+                for output in outputs:
+                    import re
+                    decoded = self.tokenizer.decode(output, skip_special_tokens=True).strip()
                     
-                overlap = len(original_words & candidate_words) / max(len(original_words), 1)
-                length_ratio = len(candidate.split()) / max(len(text.split()), 1)
-                
-                # Score: prefer moderate overlap (40-80%) and similar length
-                overlap_score = 1.0 - abs(overlap - 0.6) * 2  # Peak at 60% overlap
-                length_score = 1.0 - abs(length_ratio - 1.0)  # Peak at same length
-                
-                score = overlap_score * 0.6 + length_score * 0.4
-                
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
+                    # ROBUST prefix removal - only at start of text
+                    prefixes_to_remove = [
+                        r'^parafrasekan\s*:\s*',
+                        r'^tulis\s+ulang\s*:\s*',
+                        r'^tulis\s*:\s*',
+                        r'^ulang\s*:\s*',
+                        r'^dengan\s+kata\s+berbeda\s*:\s*',
+                        r'^kata\s+berbeda\s*:\s*',
+                        r'^kata\s+beda\s*:\s*',
+                    ]
+                    
+                    for pattern in prefixes_to_remove:
+                        decoded = re.sub(pattern, '', decoded, flags=re.IGNORECASE)
+                    
+                    # Remove any garbage like "an:fratuktur:" or "frafaksi:" at start
+                    # Match pattern like: word:word: at the beginning
+                    decoded = re.sub(r'^[a-z]+:[a-z]+:\s*', '', decoded, flags=re.IGNORECASE)
+                    
+                    # Clean up multiple punctuation
+                    decoded = re.sub(r'\s+', ' ', decoded)
+                    decoded = re.sub(r'\.{2,}', '.', decoded)
+                    decoded = re.sub(r':{2,}', ':', decoded)
+                    decoded = re.sub(r'-{2,}', '-', decoded)
+                    decoded = decoded.strip(': .-,')
+                    
+                    # STRICT VALIDATION
+                    if decoded and self._is_valid_paraphrase(text, decoded):
+                        all_candidates.append(decoded)
             
-            if best_candidate:
-                confidence = min(1.0, best_score * 0.8 + 0.2)
-                return best_candidate, confidence
-            elif candidates:
-                # If no good candidate, return the first one
-                return candidates[0], 0.5
+            # Select best candidate
+            if all_candidates:
+                # Score each candidate
+                best_candidate = None
+                best_score = -1
+                
+                for candidate in all_candidates:
+                    similarity = self._calculate_semantic_similarity(text, candidate)
+                    word_overlap = len(set(text.lower().split()) & set(candidate.lower().split())) / len(set(text.lower().split()))
+                    
+                    # Score: high semantic (0.75) + diversity (0.25)
+                    score = similarity * 0.75 + (1.0 - word_overlap) * 0.25
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = candidate
+                
+                if best_candidate:
+                    confidence = self._calculate_semantic_similarity(text, best_candidate)
+                    return best_candidate, confidence
+            
+            # Fallback to rule-based
+            logger.warning("⚠️ No valid neural candidates, using rule-based fallback")
+            fallback_result, _, _ = self._apply_synonym_substitution(text, rate=0.6)
+            if fallback_result != text:
+                return fallback_result, 0.5
             else:
-                return text, 0.0
+                return text, 0.3
             
         except Exception as e:
             logger.error(f"❌ Neural paraphrase failed: {e}")
             return text, 0.0
+    
+    def _is_valid_paraphrase(self, original: str, paraphrase: str) -> bool:
+        """Validate if paraphrase is good quality"""
+        import re
+        
+        # Basic checks
+        if not paraphrase or len(paraphrase.split()) < 3 or paraphrase.lower() == original.lower():
+            return False
+        
+        # Excessive char repetition
+        if re.search(r'(.)\1{3,}', paraphrase):
+            return False
+        
+        # Word repetition
+        words = paraphrase.split()
+        if len(words) > 0:
+            max_word_freq = max([words.count(w) for w in set(words)])
+            if max_word_freq / len(words) > 0.3:
+                return False
+            
+            # Colon-heavy words
+            colon_words = [w for w in words if ':' in w]
+            if len(colon_words) > 2:
+                return False
+        
+        # Too many special chars
+        special_chars = sum(1 for c in paraphrase if not c.isalnum() and c not in ' .,!?;:-')
+        if special_chars / max(len(paraphrase), 1) > 0.10:
+            return False
+        
+        # Invalid patterns
+        if 'kan:' in paraphrase or paraphrase.count('ulang') > 2:
+            return False
+        
+        # Word length check
+        words = [w for w in paraphrase.split() if len(w) > 2]
+        if len(words) < 2:
+            return False
+        
+        avg_word_len = sum(len(w) for w in words) / max(len(words), 1)
+        if avg_word_len < 3 or avg_word_len > 15:
+            return False
+        
+        return True
+    
+    def _calculate_semantic_similarity(self, text1: str, text2: str) -> float:
+        """
+        Calculate semantic similarity using sentence transformers (WITH CACHING)
+        
+        Args:
+            text1: First text
+            text2: Second text
+            
+        Returns:
+            Similarity score (0-1)
+        """
+        try:
+            # Check cache first
+            cache_key = f"{text1[:100]}||{text2[:100]}"  # Use first 100 chars for key
+            if self.enable_caching and hasattr(self, '_similarity_cache'):
+                if cache_key in self._similarity_cache:
+                    return self._similarity_cache[cache_key]
+            
+            # Encode both texts using semantic_model (not similarity_model!)
+            embeddings = self.semantic_model.encode([text1, text2])
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+            
+            # Cache result
+            if self.enable_caching and hasattr(self, '_similarity_cache'):
+                self._similarity_cache[cache_key] = float(similarity)
+            
+            return float(similarity)
+        except Exception as e:
+            logger.warning(f"Semantic similarity calculation failed: {e}")
+            # Fallback to quick similarity
+            return self._quick_similarity(text1, text2)
+    
+    def _quick_similarity(self, text1: str, text2: str) -> float:
+        """Fast similarity calculation without heavy semantic model"""
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        # Jaccard similarity
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        
+        return 1.0 - (intersection / union) if union > 0 else 0.0
     
     def _apply_synonym_substitution(self, text: str, rate: float = None) -> Tuple[str, List[str], int]:
         """
@@ -444,6 +558,41 @@ class IndoT5HybridParaphraser:
         
         return result, transformations, changes_count
     
+    def _apply_word_reordering(self, text: str) -> str:
+        """
+        Apply word reordering for better paraphrase variety
+        Strategically reorder words while maintaining meaning
+        """
+        try:
+            sentences = text.split('.')
+            reordered_sentences = []
+            
+            for sentence in sentences:
+                if not sentence.strip():
+                    reordered_sentences.append(sentence)
+                    continue
+                
+                words = sentence.strip().split()
+                if len(words) <= 3:
+                    reordered_sentences.append(sentence)
+                    continue
+                
+                # Find adjectives and nouns to reorder
+                # Simple heuristic: try to move adjectives or modifiers
+                if random.random() < 0.4 and len(words) >= 4:
+                    # Try swapping some words carefully
+                    # Example: "yang sangat baik" -> "yang baik sangat" is ok
+                    idx = random.randint(1, len(words) - 2)
+                    if idx < len(words) - 1:
+                        words[idx], words[idx + 1] = words[idx + 1], words[idx]
+                
+                reordered_sentences.append(' ' + ' '.join(words))
+            
+            result = '.'.join(reordered_sentences)
+            return result.strip()
+        except:
+            return text
+    
     def _calculate_quality_metrics(self, original: str, paraphrased: str, 
                                  neural_confidence: float, word_changes: int, 
                                  syntax_changes: int) -> Dict[str, float]:
@@ -483,12 +632,12 @@ class IndoT5HybridParaphraser:
         length_ratio = len(paraphrased.split()) / max(len(original.split()), 1)
         fluency_score = 1.0 - abs(1.0 - length_ratio) * 0.5
         
-        # Overall quality score
+        # Overall quality score - lebih prioritas diversity
         quality_score = (
-            semantic_similarity * 0.35 +
-            lexical_diversity * 0.25 +
+            semantic_similarity * 0.30 +
+            lexical_diversity * 0.35 +
             syntactic_complexity * 0.20 +
-            fluency_score * 0.20
+            fluency_score * 0.15
         ) * 100
         
         return {
@@ -544,26 +693,61 @@ class IndoT5HybridParaphraser:
             transformations_applied = []
             
             if method == "hybrid":
+                # ENHANCED HYBRID: Strategic balance of neural + rule-based
+                # Goal: Combine neural semantic accuracy with rule-based transformation diversity
+                
                 # Step 1: Neural paraphrase with IndoT5
                 neural_result, neural_confidence = self._neural_paraphrase(text)
-                transformations_applied.append("neural_generation")
+                transformations_applied.append(f"neural_generation (confidence: {neural_confidence:.2f})")
                 
-                # Step 2: Rule-based enhancement
-                if neural_confidence >= self.min_confidence:
-                    # Apply synonym substitution
-                    current_text, synonym_transforms, word_changes = self._apply_synonym_substitution(neural_result)
-                    transformations_applied.extend(synonym_transforms)
+                word_changes = 0
+                syntax_changes = 0
+                
+                # Step 2: Strategic Rule-based enhancement based on confidence
+                if neural_confidence >= self.min_confidence and neural_result != text:
+                    # GOOD confidence - Apply BALANCED enhancements to preserve semantics
+                    current_text = neural_result
                     
-                    # Apply syntactic transformation
-                    final_text, syntax_transforms, syntax_changes = self._apply_syntactic_transformation(current_text)
-                    transformations_applied.extend(syntax_transforms)
+                    # Moderate synonym substitution to enhance diversity
+                    synonym_result, synonym_transforms, wc = self._apply_synonym_substitution(
+                        current_text, rate=min(0.65, self.synonym_rate * 0.9)  # Moderate rate - preserve semantics
+                    )
+                    word_changes += wc
+                    transformations_applied.extend(synonym_transforms[:4])
+                    
+                    # Moderate syntactic transformation
+                    final_text, syntax_transforms, sc = self._apply_syntactic_transformation(
+                        synonym_result, max_transforms=2  # Limited transforms for good neural results
+                    )
+                    syntax_changes += sc
+                    transformations_applied.extend(syntax_transforms[:2])
+                    
+                    # Occasional word reordering for natural variation
+                    if random.random() < 0.4:
+                        final_text = self._apply_word_reordering(final_text)
+                        transformations_applied.append("word_reordering")
+                        
                 else:
-                    # Low confidence, use original text for rule-based
-                    current_text, synonym_transforms, word_changes = self._apply_synonym_substitution(text)
-                    transformations_applied.extend(synonym_transforms)
+                    # LOW confidence - Apply AGGRESSIVE rule-based transformations
+                    transformations_applied.append("low_confidence_fallback")
                     
-                    final_text, syntax_transforms, syntax_changes = self._apply_syntactic_transformation(current_text)
-                    transformations_applied.extend(syntax_transforms)
+                    # Apply stronger synonym substitution as fallback
+                    current_text, synonym_transforms, wc = self._apply_synonym_substitution(
+                        text, rate=min(0.85, self.synonym_rate * 1.2)  # Lebih tinggi untuk fallback
+                    )
+                    word_changes += wc
+                    transformations_applied.extend(synonym_transforms[:6])
+                    
+                    # Apply multiple syntactic transformations
+                    final_text, syntax_transforms, sc = self._apply_syntactic_transformation(
+                        current_text, max_transforms=4  # More transforms for fallback
+                    )
+                    syntax_changes += sc
+                    transformations_applied.extend(syntax_transforms[:3])
+                    
+                    # Always apply word reordering for aggressive fallback
+                    final_text = self._apply_word_reordering(final_text)
+                    transformations_applied.append("word_reordering")
             
             elif method == "neural":
                 # Pure neural paraphrase
@@ -573,16 +757,27 @@ class IndoT5HybridParaphraser:
                 syntax_changes = 1 if final_text != text else 0
                 
             elif method == "rule-based":
-                # Pure rule-based paraphrase
+                # Pure rule-based paraphrase - ENHANCED
                 neural_confidence = 0.0
+                transformations_applied = []
                 
-                # Apply synonym substitution
-                current_text, synonym_transforms, word_changes = self._apply_synonym_substitution(text)
-                transformations_applied.extend(synonym_transforms)
+                # Apply synonym substitution dengan rate yang TINGGI
+                current_text, synonym_transforms, word_changes = self._apply_synonym_substitution(
+                    text, rate=min(0.85, self.synonym_rate * 1.3)  # Tinggi rate untuk lebih banyak perubahan
+                )
+                transformations_applied.extend(synonym_transforms[:8])
                 
-                # Apply syntactic transformation
-                final_text, syntax_transforms, syntax_changes = self._apply_syntactic_transformation(current_text)
-                transformations_applied.extend(syntax_transforms)
+                # Apply syntactic transformation dengan aggressive
+                final_text, syntax_transforms, syntax_changes = self._apply_syntactic_transformation(
+                    current_text, max_transforms=4  # Lebih banyak transformations
+                )
+                transformations_applied.extend(syntax_transforms[:4])
+                
+                # Extra: Apply additional word order variations
+                if random.random() < 0.6:
+                    # Shuffle some words but keep meaning
+                    final_text = self._apply_word_reordering(final_text)
+                    transformations_applied.append("word_reordering")
             
             else:
                 raise ValueError(f"Unknown method: {method}")
@@ -648,7 +843,7 @@ class IndoT5HybridParaphraser:
     
     def generate_variations(self, text: str, num_variations: int = 5, method: str = "hybrid", min_quality_threshold: float = 70.0) -> List[IndoT5HybridResult]:
         """
-        Generate multiple paraphrase variations
+        Generate multiple paraphrase variations (OPTIMIZED)
         
         Args:
             text: Input text
@@ -659,39 +854,46 @@ class IndoT5HybridParaphraser:
         Returns:
             List of IndoT5HybridResult objects sorted by quality score
         """
+        logger.info(f"🔄 Generating {num_variations} variations...")
+        start_time = time.time()
+        
         variations = []
         seen_texts = set()
         
         # Clear cache for this text to ensure unique variations
         self.clear_cache(text)
         
-        for i in range(num_variations):
-            # Vary the synonym rate and transformation parameters
-            original_rate = self.synonym_rate
-            original_transforms = self.max_transformations
-            
-            # Adjust parameters for variation
-            self.synonym_rate = min(1.0, original_rate + (i * 0.15))
-            self.max_transformations = min(5, original_transforms + i)
-            
-            # Temporarily disable caching to get unique variations
-            original_caching = self.enable_caching
-            self.enable_caching = False
-            
-            # Generate variation
-            result = self.paraphrase(text, method=method)
-            
-            # Restore caching
-            self.enable_caching = original_caching
-            
-            # Only add if unique
-            if result.paraphrased_text not in seen_texts:
-                variations.append(result)
-                seen_texts.add(result.paraphrased_text)
-            
+        # Store original parameters
+        original_rate = self.synonym_rate
+        original_transforms = self.max_transformations
+        original_caching = self.enable_caching
+        
+        # Disable caching for variations
+        self.enable_caching = False
+        
+        try:
+            for i in range(num_variations):
+                logger.info(f"  📝 Variation {i+1}/{num_variations}...")
+                
+                # Adjust parameters for variation
+                self.synonym_rate = min(1.0, original_rate + (i * 0.15))
+                self.max_transformations = min(5, original_transforms + i)
+                
+                # Generate variation
+                result = self.paraphrase(text, method=method)
+                
+                # Only add if unique
+                if result.paraphrased_text not in seen_texts:
+                    variations.append(result)
+                    seen_texts.add(result.paraphrased_text)
+                    logger.info(f"  ✅ Variation {i+1} completed (quality: {result.quality_score:.2f})")
+                else:
+                    logger.info(f"  ⚠️  Variation {i+1} duplicate, skipped")
+        finally:
             # Restore original parameters
             self.synonym_rate = original_rate
             self.max_transformations = original_transforms
+            self.enable_caching = original_caching
         
         # Sort by quality score
         variations.sort(key=lambda x: x.quality_score, reverse=True)
@@ -704,6 +906,9 @@ class IndoT5HybridParaphraser:
                 return filtered
             else:
                 logger.warning(f"No variations met quality threshold {min_quality_threshold}%. Returning best available.")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✅ Generated {len(variations)} unique variations in {elapsed:.2f}s")
         
         return variations
     

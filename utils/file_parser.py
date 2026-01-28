@@ -166,12 +166,25 @@ class FileParser:
         Returns:
             Cleaned text
         """
+        # Remove control characters except newlines and tabs
+        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+        
         # Remove excessive whitespace
         text = re.sub(r'\n{3,}', '\n\n', text)
         text = re.sub(r' {2,}', ' ', text)
+        text = re.sub(r'\t+', ' ', text)
         
         # Remove page numbers and headers (common patterns)
         text = re.sub(r'\n\d+\n', '\n', text)
+        text = re.sub(r'^\d+\s*$', '', text, flags=re.MULTILINE)
+        
+        # Remove common PDF artifacts
+        text = re.sub(r'[\uf0b7\u2022\u2023\u2043]', '', text)  # bullets
+        text = re.sub(r'\x0c', '', text)  # form feed
+        
+        # Normalize punctuation spacing
+        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+        text = re.sub(r'([.,!?;:])(?=[^\s])', r'\1 ', text)
         
         # Strip leading/trailing whitespace
         text = text.strip()
@@ -188,22 +201,38 @@ class FileParser:
         Returns:
             List of sentences
         """
-        # Simple sentence splitting for Indonesian
-        # Split on common sentence endings
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        # Indonesian sentence splitting with better patterns
+        # Split on sentence endings followed by space and capital letter or newline
+        sentences = re.split(r'(?<=[.!?])(?:\s+(?=[A-Z])|\n+)', text)
         
-        # Filter empty sentences and clean
-        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+        # Also split on paragraph breaks
+        result = []
+        for sent in sentences:
+            # If still too long, split on semicolons or commas in long text
+            if len(sent) > 500:
+                sub_parts = re.split(r'(?<=[;,])\s+', sent)
+                result.extend(sub_parts)
+            else:
+                result.append(sent)
+        
+        # Filter empty sentences, too short, and clean
+        sentences = []
+        for s in result:
+            s = s.strip()
+            # Keep sentences with at least 3 words
+            if s and len(s.split()) >= 3:
+                sentences.append(s)
         
         return sentences
     
-    def chunk_text(self, text: str, max_chars: int = None) -> List[str]:
+    def chunk_text(self, text: str, max_chars: int = None, overlap: int = 100) -> List[str]:
         """
-        Split text into chunks suitable for paraphrasing
+        Split text into chunks suitable for paraphrasing with overlap for context
         
         Args:
             text: Input text
             max_chars: Maximum characters per chunk (default: MAX_CHUNK_CHARS)
+            overlap: Number of characters to overlap between chunks for context
             
         Returns:
             List of text chunks
@@ -222,42 +251,81 @@ class FileParser:
         sentences = self.split_into_sentences(text)
         
         if not sentences:
-            # Fallback: split by paragraphs or fixed length
-            paragraphs = text.split('\n\n')
+            # Fallback: split by paragraphs with overlap
+            paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
             chunks = []
             current_chunk = ""
+            prev_overlap = ""
             
             for para in paragraphs:
-                if len(current_chunk) + len(para) + 2 <= max_chars:
-                    current_chunk += ("\n\n" if current_chunk else "") + para
+                # Add overlap from previous chunk
+                chunk_start = prev_overlap + (" " if prev_overlap else "")
+                
+                if len(chunk_start) + len(para) <= max_chars:
+                    current_chunk = chunk_start + para
                 else:
                     if current_chunk:
                         chunks.append(current_chunk)
-                    current_chunk = para[:max_chars]  # Truncate if single para is too long
+                    current_chunk = chunk_start + para[:max_chars - len(chunk_start)]
+                
+                # Save overlap for next chunk (last N chars)
+                if len(current_chunk) > overlap:
+                    prev_overlap = current_chunk[-overlap:]
+                else:
+                    prev_overlap = current_chunk
             
             if current_chunk:
                 chunks.append(current_chunk)
             
             return chunks
         
-        # Group sentences into chunks
+        # Group sentences into chunks with overlap
         chunks = []
         current_chunk = ""
+        overlap_sentences = []  # Store last few sentences for overlap
         
-        for sentence in sentences:
-            if len(current_chunk) + len(sentence) + 1 <= max_chars:
-                current_chunk += (" " if current_chunk else "") + sentence
+        for i, sentence in enumerate(sentences):
+            # Start with overlap from previous chunk
+            if overlap_sentences and not current_chunk:
+                current_chunk = " ".join(overlap_sentences)
+            
+            test_chunk = current_chunk + (" " if current_chunk else "") + sentence
+            
+            if len(test_chunk) <= max_chars:
+                current_chunk = test_chunk
+                # Update overlap buffer (keep last 2-3 sentences)
+                overlap_sentences.append(sentence)
+                if len(overlap_sentences) > 3:
+                    overlap_sentences.pop(0)
             else:
+                # Current chunk is full, save it
                 if current_chunk:
-                    chunks.append(current_chunk)
-                # If single sentence is too long, truncate it
-                current_chunk = sentence[:max_chars] if len(sentence) > max_chars else sentence
+                    chunks.append(current_chunk.strip())
+                
+                # Start new chunk with overlap
+                overlap_text = " ".join(overlap_sentences[-2:]) if len(overlap_sentences) >= 2 else ""
+                if len(overlap_text) + len(sentence) + 1 <= max_chars:
+                    current_chunk = overlap_text + (" " if overlap_text else "") + sentence
+                else:
+                    # If sentence too long even with minimal overlap
+                    current_chunk = sentence[:max_chars]
+                
+                overlap_sentences = [sentence]
         
+        # Add remaining chunk
         if current_chunk:
-            chunks.append(current_chunk)
+            chunks.append(current_chunk.strip())
         
-        logger.info(f"📄 Split text into {len(chunks)} chunks")
-        return chunks
+        # Remove duplicate chunks
+        unique_chunks = []
+        seen = set()
+        for chunk in chunks:
+            if chunk not in seen and len(chunk.split()) >= 3:
+                unique_chunks.append(chunk)
+                seen.add(chunk)
+        
+        logger.info(f"📄 Split text into {len(unique_chunks)} chunks (with overlap for context)")
+        return unique_chunks
     
     def process_file(self, file_path: str, chunk: bool = True) -> dict:
         """

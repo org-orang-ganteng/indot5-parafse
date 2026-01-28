@@ -59,7 +59,12 @@ def paraphrase():
         # Get JSON data from request
         data = request.get_json()
         
-        if not data or 'text' not in data:
+        if not data:
+            logger.error("No JSON data received")
+            return jsonify({'error': 'No JSON data provided'}), 400
+            
+        if 'text' not in data:
+            logger.error("No 'text' field in JSON data")
             return jsonify({'error': 'No text provided'}), 400
         
         text = data['text'].strip()
@@ -90,6 +95,11 @@ def paraphrase():
             return jsonify({'error': 'Temperature must be between 0.1 and 2.0'}), 400
         
         logger.info(f"Processing text: {text[:50]}... with method: {method}, min_quality: {min_quality}%")
+        
+        # Check if paraphraser is initialized
+        if paraphraser is None:
+            logger.error("Paraphraser not initialized")
+            return jsonify({'error': 'Paraphraser not initialized. Please restart the server.'}), 500
         
         # Generate paraphrases using generate_variations for unique results
         # Request more variations to ensure we have enough after quality filtering
@@ -143,10 +153,10 @@ def paraphrase():
             response_data['warning'] = warning
         
         logger.info(f"Generated {len(paraphrases)} paraphrases")
-        return jsonify(response_data)
+        return jsonify(response_data), 200
         
     except Exception as e:
-        logger.error(f"Error processing paraphrase request: {e}")
+        logger.error(f"Error processing paraphrase request: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
@@ -189,6 +199,7 @@ def upload_file():
             # Clean up uploaded file
             os.remove(file_path)
             
+            logger.info(f"Successfully processed file: {filename}")
             return jsonify({
                 'success': True,
                 'filename': filename,
@@ -197,16 +208,17 @@ def upload_file():
                 'chunk_count': result['chunk_count'],
                 'metadata': result['metadata'],
                 'character_count': len(result['cleaned_text'])
-            })
+            }), 200
             
         except Exception as e:
+            logger.error(f"Error processing file: {e}", exc_info=True)
             # Clean up on error
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise e
             
     except Exception as e:
-        logger.error(f"Error uploading file: {e}")
+        logger.error(f"Error uploading file: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/paraphrase-chunks', methods=['POST'])
@@ -225,9 +237,13 @@ def paraphrase_chunks():
             return jsonify({'error': 'Empty chunks array'}), 400
         
         results = []
+        paraphrased_chunks = []
+        
         for i, chunk in enumerate(chunks):
             if chunk.strip():
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}")
                 result = paraphraser.paraphrase(chunk.strip(), method=method)
+                
                 results.append({
                     'chunk_index': i,
                     'original': chunk,
@@ -235,22 +251,64 @@ def paraphrase_chunks():
                     'quality_score': float(result.quality_score),
                     'success': result.success
                 })
+                
+                paraphrased_chunks.append(result.paraphrased_text)
         
-        # Combine all paraphrased chunks
-        combined_text = ' '.join([r['paraphrased'] for r in results])
+        # Smart combining: remove duplicate overlaps and join smoothly
+        combined_text = smart_combine_chunks(paraphrased_chunks)
         avg_quality = sum(r['quality_score'] for r in results) / len(results) if results else 0
         
+        logger.info(f"Successfully processed {len(results)} chunks")
         return jsonify({
             'success': True,
             'chunks_processed': len(results),
             'combined_text': combined_text,
             'average_quality': avg_quality,
             'chunk_results': results
-        })
+        }), 200
         
     except Exception as e:
-        logger.error(f"Error paraphrasing chunks: {e}")
+        logger.error(f"Error paraphrasing chunks: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+def smart_combine_chunks(chunks):
+    """
+    Combine chunks intelligently by removing duplicate overlaps
+    and joining smoothly
+    """
+    if not chunks:
+        return ""
+    
+    if len(chunks) == 1:
+        return chunks[0]
+    
+    combined = chunks[0]
+    
+    for i in range(1, len(chunks)):
+        current = chunks[i]
+        
+        # Try to find overlap between end of combined and start of current
+        max_overlap = min(100, len(combined), len(current))
+        best_overlap = 0
+        
+        for overlap_len in range(max_overlap, 10, -1):
+            end_part = combined[-overlap_len:].lower().strip()
+            start_part = current[:overlap_len].lower().strip()
+            
+            # Check for similar text (allowing some variation)
+            if end_part in start_part or start_part in end_part:
+                best_overlap = overlap_len
+                break
+        
+        # Join with overlap removed
+        if best_overlap > 0:
+            # Remove overlap from current chunk
+            combined += " " + current[best_overlap:].strip()
+        else:
+            # No overlap, just join with space
+            combined += " " + current
+    
+    return combined.strip()
 
 @app.errorhandler(404)
 def not_found(error):
@@ -258,7 +316,17 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
+    logger.error(f"Internal server error: {error}")
     return jsonify({'error': 'Internal server error'}), 500
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({'error': 'File terlalu besar. Maksimal 16MB'}), 413
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    logger.error(f"Unhandled exception: {error}")
+    return jsonify({'error': str(error)}), 500
 
 if __name__ == '__main__':
     try:
