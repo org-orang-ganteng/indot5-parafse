@@ -97,6 +97,11 @@ pip install -r requirements-neural.txt
 - Ubah port di `app.py` atau `run_web_app.py`
 - Atau hentikan aplikasi lain yang menggunakan port 5000
 
+**Jika terjadi timeout 504 di browser:**
+- ✅ **FIXED!** Sekarang menggunakan SSE streaming
+- Progress ditampilkan real-time, tidak ada timeout lagi
+- Browser akan menampilkan progress untuk setiap variasi yang dihasilkan
+
 ## 🚀 Quick Start
 
 ```python
@@ -162,16 +167,41 @@ python app.py
 - ⚙️ **Adjustable parameters**: Fine-tune generation settings
 - 📱 **Mobile-friendly**: Works on all devices
 - 🚀 **Fast processing**: Efficient backend with caching
+- ⚡ **SSE Streaming**: Real-time progress updates, **no timeout issues**
+- 🔴 **Live Progress**: See generation progress for each variation
+
+### 🆕 SSE Streaming (Anti-Timeout)
+
+**Problem Solved**: Sebelumnya, proses generate parafrase yang lama (>2 menit) menyebabkan error **504 Gateway Timeout** di browser.
+
+**Solution**: Implementasi **Server-Sent Events (SSE)** untuk streaming progress real-time:
+
+✅ **Real-time Progress**: Melihat progress setiap variasi yang dihasilkan  
+✅ **No Timeout**: Koneksi tetap hidup selama proses berlangsung  
+✅ **Live Updates**: Quality score dan status ditampilkan langsung  
+✅ **Better UX**: User tahu persis apa yang sedang terjadi  
+
+**Technical Implementation:**
+- Endpoint: `/paraphrase-stream` (POST) - menggunakan SSE
+- Endpoint: `/paraphrase` (POST) - legacy, masih tersedia
+- Frontend: JavaScript EventSource untuk streaming
+- Progress bar dan status real-time
+
+**Cara Kerja:**
+```
+User Submit → Server mulai generate → Stream progress setiap variasi
+→ Browser terima update real-time → Display hasil bertahap
+```
 
 ### API Endpoints
 
-The web application also provides REST API endpoints:
+The web application provides REST API endpoints:
 
 ```bash
 # Health check
 GET /health
 
-# Paraphrase text
+# Paraphrase text (Legacy - may timeout for long processing)
 POST /paraphrase
 Content-Type: application/json
 
@@ -179,10 +209,30 @@ Content-Type: application/json
   "text": "Your Indonesian text here",
   "method": "hybrid",
   "num_variations": 3,
-  "min_quality": 0.6,
+  "min_quality": 70,
   "max_length": 200,
   "temperature": 1.0
 }
+
+# Paraphrase with SSE Streaming (Recommended - No timeout)
+POST /paraphrase-stream
+Content-Type: application/json
+
+{
+  "text": "Your Indonesian text here",
+  "method": "hybrid",
+  "num_variations": 10,
+  "min_quality": 70
+}
+
+# Response akan streaming dengan Server-Sent Events:
+data: {"status": "started", "message": "Memulai proses parafrase..."}
+
+data: {"status": "progress", "current": 1, "total": 10, "message": "Menghasilkan variasi 1/10..."}
+
+data: {"status": "result", "variation": 1, "data": {...}, "total_found": 1}
+
+data: {"status": "completed", "total_variations": 5, "paraphrases": [...]}
 ```
 
 ## 🔧 How It Works

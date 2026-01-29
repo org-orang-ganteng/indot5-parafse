@@ -1,0 +1,141 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PyCharm
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+*.log.*
+/tmp/
+*.bak
+
+# Model cache and downloads
+models/
+*.pt
+*.pth
+*.bin
+*.onnx
+model_cache/
+huggingface_cache/
+.cache/
+
+# Data files (jangan push data besar)
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.docx
+*.doc
+uploads/
+data/large_files/
+data/raw/
+data/processed/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Compiled files
+*.pyc
+*.pyo
+
+# System files
+desktop.ini
+.directory
+
+# Flask specific
+instance/
+.webassets-cache
+
+# Backup files
+*.backup
+backup/
+
+# Large files (gunakan Git LFS jika perlu)
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Sensitive information
+config_local.py
+secrets.json
+credentials.json
+*.key
+*.pem
+*.cert
+
+# Node modules (jika ada frontend)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Output files
+output/
+results/
+exports/
+
+# Ngrok/Tunnel logs
+ngrok.log

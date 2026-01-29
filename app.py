@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 import os
 import sys
 import json
@@ -6,6 +6,9 @@ import uuid
 from typing import Dict, Any
 import logging
 from werkzeug.utils import secure_filename
+import time
+from queue import Queue
+import threading
 
 # Add the current directory to the path to import our modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -52,9 +55,82 @@ def index():
     """Serve the HTML interface"""
     return send_file('index.html')
 
+@app.route('/paraphrase-stream', methods=['POST'])
+def paraphrase_stream():
+    """Handle paraphrasing with Server-Sent Events streaming"""
+    def generate():
+        try:
+            # Get JSON data from request
+            data = request.get_json()
+            
+            if not data:
+                yield f"data: {json.dumps({'error': 'No JSON data provided'})}\\n\\n"
+                return
+                
+            if 'text' not in data:
+                yield f"data: {json.dumps({'error': 'No text provided'})}\\n\\n"
+                return
+            
+            text = data['text'].strip()
+            if not text:
+                yield f"data: {json.dumps({'error': 'Empty text provided'})}\\n\\n"
+                return
+            
+            # Extract parameters
+            method = data.get('method', 'hybrid')
+            num_variations = data.get('num_variations', 5)
+            min_quality = data.get('min_quality', 70)
+            
+            # Send initial status
+            yield f"data: {json.dumps({'status': 'started', 'message': 'Memulai proses parafrase...'})}\\n\\n"
+            
+            # Request more variations
+            request_count = min(num_variations * 2, 10)
+            
+            paraphrases = []
+            
+            # Generate variations one by one and stream progress
+            for i in range(request_count):
+                yield f"data: {json.dumps({'status': 'progress', 'current': i+1, 'total': request_count, 'message': f'Menghasilkan variasi {i+1}/{request_count}...'})}\\n\\n"
+                
+                result = paraphraser.paraphrase(text, method=method)
+                
+                if result.success and result.quality_score >= min_quality:
+                    paraphrase_data = {
+                        'text': result.paraphrased_text,
+                        'quality_score': float(result.quality_score),
+                        'semantic_similarity': float(result.semantic_similarity),
+                        'lexical_diversity': float(result.lexical_diversity),
+                        'fluency_score': float(result.fluency_score),
+                        'method': result.method_used,
+                        'processing_time': float(result.processing_time),
+                        'success': result.success
+                    }
+                    paraphrases.append(paraphrase_data)
+                    
+                    # Stream the new result immediately
+                    yield f"data: {json.dumps({'status': 'result', 'variation': i+1, 'data': paraphrase_data, 'total_found': len(paraphrases)})}\\n\\n"
+                
+                # Check if we have enough results
+                if len(paraphrases) >= num_variations:
+                    break
+            
+            # Sort by quality
+            paraphrases.sort(key=lambda x: x['quality_score'], reverse=True)
+            paraphrases = paraphrases[:num_variations]
+            
+            # Send completion
+            yield f"data: {json.dumps({'status': 'completed', 'total_variations': len(paraphrases), 'paraphrases': paraphrases, 'original_text': text})}\\n\\n"
+            
+        except Exception as e:
+            logger.error(f"Error in streaming: {e}", exc_info=True)
+            yield f"data: {json.dumps({'status': 'error', 'error': str(e)})}\\n\\n"
+    
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
 @app.route('/paraphrase', methods=['POST'])
 def paraphrase():
-    """Handle paraphrasing requests"""
+    """Handle paraphrasing requests (non-streaming, legacy)"""
     try:
         # Get JSON data from request
         data = request.get_json()
